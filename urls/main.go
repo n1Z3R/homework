@@ -63,8 +63,8 @@ func Start(urls []string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	wg.Add(n)
 	for i := 0; i < n; i++ {
-		wg.Add(1)
 		go worker(ctx, &wg, jobs, results)
 
 	}
