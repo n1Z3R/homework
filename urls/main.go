@@ -2,72 +2,107 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 )
 
-var (
-	counter = 0
-	mu      sync.Mutex
-)
+var urls = []string{
+	"http://google.ru",
+	"wrong-",
+	"unexisting.ru",
+	"http://ya.ru",
+	"http://vk.com",
+	"http://vk.com",
+	"http://vk.com",
+}
 
-func main() {
-	urls := []string{
-		"http://google.ru",
-		"wrong-",
-		"unexisting.ru",
-		"http://ya.ru",
-		"http://vk.com",
-		"http://vk.com",
-		"http://vk.com",
+func worker(ctx context.Context, wg *sync.WaitGroup, jobs <-chan string, results chan<- int) {
+	defer wg.Done()
+	for {
+		select {
+		case u, ok := <-jobs:
+			if !ok {
+				fmt.Println("stopping worker!")
+				return
+			}
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+			if err != nil {
+				continue
+			}
+
+			httpClient := &http.Client{
+				Timeout: time.Second * 5,
+			}
+
+			r, err := httpClient.Do(req)
+			if err != nil {
+				continue
+			}
+			defer r.Body.Close()
+
+			results <- r.StatusCode
+		case <-ctx.Done():
+			fmt.Println("canceling worker!")
+			return
+		}
 	}
+}
 
-	wg := sync.WaitGroup{}
+func Start(urls []string) {
+	var count int
+	var wg sync.WaitGroup
 
-	// Контекст для отмены запросов
+	n := 100
+
+	jobs := make(chan string, n)
+	results := make(chan int, n)
+
 	ctx, cancel := context.WithCancel(context.Background())
-	// Канал для уведомления о надобности увеличения счетчика удачных запросов
-	ch := make(chan struct{})
+	defer cancel()
 
-	for _, url := range urls {
+	for i := 0; i < n; i++ {
 		wg.Add(1)
-		go func(wg *sync.WaitGroup, url string) {
-			defer wg.Done()
+		go worker(ctx, &wg, jobs, results)
 
-			req, err := http.NewRequest("GET", url, nil)
-			if err != nil {
-				return
-			}
-			req = req.WithContext(ctx)
-
-			client := http.Client{}
-
-			r, err := client.Do(req)
-			if err != nil {
-				if errors.Is(err, context.Canceled) {
-					fmt.Println("context canceled!")
-				}
-				return
-			}
-
-			if r.StatusCode == http.StatusOK {
-				fmt.Printf("URL: %s StatusCode: %d\n", url, r.StatusCode)
-				ch <- struct{}{}
-			}
-		}(&wg, url)
 	}
+
 	go func() {
-		for range ch {
-			counter++
-			if counter == 2 {
-				cancel()
+		for _, u := range urls {
+			select {
+			case <-ctx.Done():
+				fmt.Println("stop writing url")
+				return
+			case jobs <- u:
+			}
+		}
+		close(jobs)
+	}()
+
+	go func() {
+		for r := range results {
+			if r == 200 {
+				count++
+				if count == 2 {
+					fmt.Println("canceling")
+					cancel()
+					break
+				}
 			}
 		}
 	}()
 	wg.Wait()
+	close(results)
+	fmt.Println(count)
+}
 
-	fmt.Println("goroutines finished.")
-	fmt.Printf("counter = %d\n", counter)
+func main() {
+	n := 189695511
+	u := make([]string, n)
+	for i := 0; i < n; i++ {
+		u[i] = urls[i%7]
+	}
+	Start(u)
 }
